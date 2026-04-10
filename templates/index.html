@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pyyzzang Music - Filtered Search</title>
+    <script src="https://accounts.google.com/gsi/client" onload="initGIS()" async defer></script>
+    <style>
+        body { font-family: 'Segoe UI', sans-serif; display: flex; flex-direction: column; align-items: center; padding: 2rem; background-color: #121212; color: #ffffff; }
+        .container { background: #1e1e1e; padding: 2rem; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.6); text-align: center; width: 100%; max-width: 1000px; border: 1px solid #333; }
+        h1 { color: #ff0000; font-size: 2.5rem; letter-spacing: -2px; margin-bottom: 1rem; cursor: pointer; }
+        
+        /* Filter Styles */
+        .filter-section { display: flex; gap: 15px; justify-content: center; margin-bottom: 30px; background: #252525; padding: 20px; border-radius: 10px; border: 1px solid #333; }
+        select { background: #121212; color: #fff; border: 1px solid #444; padding: 10px 20px; border-radius: 20px; font-size: 0.95rem; cursor: pointer; outline: none; }
+        select:focus { border-color: #ff0000; }
+        .btn-search { background: #ff0000; color: #fff; border: none; padding: 10px 30px; border-radius: 20px; font-weight: bold; cursor: pointer; }
+        .btn-search:hover { background: #cc0000; }
+
+        /* Grid and Card Styles */
+        section { text-align: left; margin-top: 40px; width: 100%; display: none; }
+        h3 { border-left: 4px solid #ff0000; padding-left: 10px; margin-bottom: 20px; font-size: 1.1rem; }
+        .grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 15px; }
+        
+        .card { background: #2a2a2a; border: 1px solid #333; padding: 10px; border-radius: 8px; cursor: pointer; transition: all 0.3s; }
+        .card:hover { transform: translateY(-5px); border-color: #ff0000; background: #333; box-shadow: 0 5px 15px rgba(255,0,0,0.3); }
+        .card img { width: 100%; border-radius: 4px; margin-bottom: 8px; }
+        .card-title { font-weight: bold; font-size: 0.8rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; height: 2.2rem; line-height: 1.1rem; color: #efefef; }
+        .card-info { font-size: 0.7rem; color: #888; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .more-btn-container { text-align: center; margin-top: 25px; display: none; }
+        .btn-more { background: #333; color: #fff; border: 1px solid #444; padding: 8px 30px; border-radius: 20px; font-size: 0.85rem; cursor: pointer; }
+        #toast { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); background: #ff0000; color: white; padding: 12px 24px; border-radius: 30px; display: none; z-index: 1000; font-weight: bold; }
+        button#login-btn { background-color: #ff0000; color: white; border: none; padding: 12px 24px; border-radius: 25px; cursor: pointer; font-weight: bold; }
+    </style>
+    <script>
+        const API_KEY = "AIzaSyDXAWGcYRMgEgyvd6NyYT3McoaUo_PcQnA";
+        let tokenClient;
+        let accessToken = null;
+        let isInitialized = false;
+
+        // 페이징 토큰
+        let trendingNextPageToken = "";
+        let searchNextPageToken = "";
+        let playlistNextPageToken = "";
+        let videoNextPageToken = "";
+        let currentPlaylistId = "";
+
+        function showToast(msg) {
+            const toast = document.getElementById('toast');
+            toast.innerText = msg;
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 3000);
+        }
+
+        function log(msg, type = 'System') {
+            // UI 로그 박스 대신 브라우저 콘솔에만 출력
+            console.log(`[${new Date().toLocaleTimeString()}] [${type}] ${msg}`);
+        }
+
+        async function insertToMusicList(id, title) {
+            log(`곡 저장 요청: ${title}`);
+            try {
+                const response = await fetch(`/Music/InsertMusicList/?PlayListId=${id}&PlayListName=${encodeURIComponent(title)}`);
+                const data = await response.json();
+                if (data.Result === "Success") showToast("곡이 등록되었습니다!");
+                else showToast("저장 실패: " + data.Message);
+            } catch (err) { showToast("서버 통신 에러"); }
+        }
+
+        // 1. 인기 급상승 음악 로드
+        async function fetchTrendingMusic(isMore = false) {
+            const container = document.getElementById('trending-items');
+            const moreBtn = document.getElementById('trending-more-btn');
+            if (!isMore) container.innerHTML = '로딩 중...';
+
+            try {
+                let url = `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&videoCategoryId=10&regionCode=KR&maxResults=20&key=${API_KEY}`;
+                if (isMore && trendingNextPageToken) url += `&pageToken=${trendingNextPageToken}`;
+
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (!isMore) container.innerHTML = '';
+                trendingNextPageToken = data.nextPageToken || "";
+                moreBtn.parentElement.style.display = trendingNextPageToken ? 'block' : 'none';
+
+                data.items.forEach(item => {
+                    const card = createMusicCard(item.id, item.snippet.title, item.snippet.channelTitle, item.snippet.thumbnails.medium.url);
+                    container.appendChild(card);
+                });
+                document.getElementById('trending-section').style.display = 'block';
+            } catch (err) { log("인기 음악 로드 실패", "Error"); }
+        }
+
+        // 2. 필터링 검색 (아티스트, 취향)
+        async function fetchFilteredMusic(isMore = false) {
+            const artist = document.getElementById('artist-select').value;
+            const taste = document.getElementById('taste-select').value;
+            const query = `${artist} ${taste}`.trim();
+
+            log(`필터 검색 요청: ${query}`);
+            const container = document.getElementById('search-items');
+            const section = document.getElementById('search-section');
+            const moreBtn = document.getElementById('search-more-btn');
+
+            if (!isMore) {
+                container.innerHTML = '검색 중...';
+                searchNextPageToken = "";
+            }
+            section.style.display = 'block';
+
+            try {
+                let url = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoCategoryId=10&q=${encodeURIComponent(query)}&maxResults=20&key=${API_KEY}`;
+                if (isMore && searchNextPageToken) url += `&pageToken=${searchNextPageToken}`;
+
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                if (!isMore) container.innerHTML = '';
+                searchNextPageToken = data.nextPageToken || "";
+                moreBtn.parentElement.style.display = searchNextPageToken ? 'block' : 'none';
+
+                data.items.forEach(item => {
+                    const card = createMusicCard(item.id.videoId, item.snippet.title, item.snippet.channelTitle, item.snippet.thumbnails.medium.url);
+                    container.appendChild(card);
+                });
+                section.scrollIntoView({ behavior: 'smooth' });
+            } catch (err) { log("필터 검색 실패", "Error"); }
+        }
+
+        function createMusicCard(id, title, channel, thumb) {
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.onclick = () => insertToMusicList(id, title);
+            card.innerHTML = `
+                <img src="${thumb}" alt="thumb">
+                <div class="card-title" title="${title}">${title}</div>
+                <div class="card-info">${channel}</div>
+            `;
+            return card;
+        }
+
+        // 3. 내 재생목록 로드
+        async function fetchPlaylists(isMore = false) {
+            const container = document.getElementById('playlist-items');
+            const moreBtn = document.getElementById('playlist-more-btn');
+            if (!isMore) container.innerHTML = '로딩 중...';
+            try {
+                let url = `https://www.googleapis.com/youtube/v3/playlists?part=snippet,contentDetails&mine=true&maxResults=20`;
+                if (isMore && playlistNextPageToken) url += `&pageToken=${playlistNextPageToken}`;
+                const response = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+                const data = await response.json();
+                if (!isMore) container.innerHTML = '';
+                playlistNextPageToken = data.nextPageToken || "";
+                moreBtn.parentElement.style.display = playlistNextPageToken ? 'block' : 'none';
+                data.items.forEach(item => {
+                    const card = document.createElement('div');
+                    card.className = 'card';
+                    card.onclick = () => fetchVideos(item.id, item.snippet.title);
+                    card.innerHTML = `
+                        <img src="${item.snippet.thumbnails.medium.url}" alt="thumb">
+                        <div class="card-title" title="${item.snippet.title}">${item.snippet.title}</div>
+                        <div class="card-info">${item.contentDetails.itemCount} 곡</div>
+                    `;
+                    container.appendChild(card);
+                });
+                document.getElementById('playlist-section').style.display = 'block';
+            } catch (err) { log("재생목록 로드 실패", "Error"); }
+        }
+
+        async function fetchVideos(playlistId, title, isMore = false) {
+            if (!isMore) {
+                currentPlaylistId = playlistId;
+                videoNextPageToken = "";
+                document.getElementById('selected-playlist-title').innerText = title;
+                document.getElementById('video-items').innerHTML = '로딩 중...';
+                document.getElementById('video-section').style.display = 'block';
+                document.getElementById('video-section').scrollIntoView({ behavior: 'smooth' });
+            }
+            const container = document.getElementById('video-items');
+            const moreBtn = document.getElementById('video-more-btn');
+            try {
+                let url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&maxResults=50&playlistId=${currentPlaylistId}`;
+                if (isMore && videoNextPageToken) url += `&pageToken=${videoNextPageToken}`;
+                const response = await fetch(url, { headers: { 'Authorization': `Bearer ${accessToken}` } });
+                const data = await response.json();
+                if (!isMore) container.innerHTML = '';
+                videoNextPageToken = data.nextPageToken || "";
+                moreBtn.parentElement.style.display = videoNextPageToken ? 'block' : 'none';
+                data.items.forEach(item => {
+                    const card = createMusicCard(item.snippet.resourceId.videoId, item.snippet.title, item.snippet.channelTitle, item.snippet.thumbnails.medium ? item.snippet.thumbnails.medium.url : item.snippet.thumbnails.default.url);
+                    container.appendChild(card);
+                });
+            } catch (err) { log("동영상 로드 실패", "Error"); }
+        }
+
+        function initGIS() {
+            if (isInitialized) return;
+            isInitialized = true;
+            tokenClient = google.accounts.oauth2.initTokenClient({
+                client_id: "{{ google_client_id }}",
+                scope: "https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/userinfo.profile",
+                callback: (response) => {
+                    if (response.error !== undefined) return;
+                    accessToken = response.access_token;
+                    document.getElementById('login-section').style.display = 'none';
+                    fetchPlaylists();
+                },
+            });
+            document.getElementById('login-btn').disabled = false;
+        }
+
+        function login() { tokenClient.requestAccessToken({prompt: 'select_account'}); }
+        window.onload = function() { fetchTrendingMusic(); };
+    </script>
+</head>
+<body>
+    <div id="toast"></div>
+    <div class="container">
+        <h1 onclick="location.reload()">Pyyzzang Music</h1>
+
+        <!-- Filter Section -->
+        <div class="filter-section">
+            <select id="artist-select">
+                <option value="">아티스트 선택 (전체)</option>
+                <option value="뉴진스">뉴진스 (NewJeans)</option>
+                <option value="아이브">아이브 (IVE)</option>
+                <option value="아이유">아이유 (IU)</option>
+                <option value="임영웅">임영웅</option>
+                <option value="블랙핑크">블랙핑크 (BLACKPINK)</option>
+                <option value="BTS">BTS</option>
+                <option value="르세라핌">르세라핌 (LE SSERAFIM)</option>
+            </select>
+            <select id="taste-select">
+                <option value="노래">취향/장르 선택 (전체)</option>
+                <option value="K-pop">K-Pop</option>
+                <option value="발라드">발라드</option>
+                <option value="댄스">댄스곡</option>
+                <option value="힙합">힙합</option>
+                <option value="R&B">R&B / 소울</option>
+                <option value="트로트">트로트</option>
+                <option value="OST">드라마 OST</option>
+            </select>
+            <button class="btn-search" onclick="fetchFilteredMusic()">조회하기</button>
+        </div>
+
+        <div class="debug-box" id="debug-log"></div>
+
+        <!-- Filter Search Results -->
+        <section id="search-section">
+            <h3>🔍 필터 조회 결과</h3>
+            <div id="search-items" class="grid"></div>
+            <div class="more-btn-container">
+                <button class="btn-more" id="search-more-btn" onclick="fetchFilteredMusic(true)">검색 결과 더보기 ▽</button>
+            </div>
+        </section>
+
+        <section id="trending-section">
+            <h3>🔥 현재 인기 급상승 음악</h3>
+            <div id="trending-items" class="grid"></div>
+            <div class="more-btn-container">
+                <button class="btn-more" id="trending-more-btn" onclick="fetchTrendingMusic(true)">인기 음악 더보기 ▽</button>
+            </div>
+        </section>
+
+        <div id="login-section" style="margin-top:40px; border: 1px dashed #444; padding: 20px; border-radius: 10px;">
+            <p>내 재생목록을 함께 보려면 로그인하세요.</p>
+            <button id="login-btn" onclick="login()" disabled>Google 로그인</button>
+        </div>
+
+        <section id="playlist-section">
+            <h3>📂 내 유튜브 재생목록</h3>
+            <div id="playlist-items" class="grid"></div>
+            <div class="more-btn-container">
+                <button class="btn-more" id="playlist-more-btn" onclick="fetchPlaylists(true)">재생목록 더보기 ▽</button>
+            </div>
+        </section>
+
+        <section id="video-section">
+            <h3>🎵 <span id="selected-playlist-title" style="color:#ff0000;"></span> - 상세 목록</h3>
+            <div id="video-items" class="grid"></div>
+            <div class="more-btn-container">
+                <button class="btn-more" id="video-more-btn" onclick="fetchVideos(null, null, true)">동영상 더보기 ▽</button>
+            </div>
+        </section>
+    </div>
+</body>
+</html>
